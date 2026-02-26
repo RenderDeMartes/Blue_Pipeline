@@ -92,6 +92,7 @@ class Menu(QtWidgets.QDialog):
         self.nda_mode = self.fileMenu.addAction('NDA Mode')
         self.fileMenu.addSeparator()
         self.download_latest = self.fileMenu.addAction('Download Latest')
+        self.version_delete = self.fileMenu.addAction('Version Delete')
         self.fileMenu.addSeparator()
 
         # -------------------------------------------------------------------
@@ -117,6 +118,7 @@ class Menu(QtWidgets.QDialog):
         #FILE MENU
         self.nda_mode.triggered.connect(self.toggle_nda_mode)
         self.download_latest.triggered.connect(self.open_link_donwload_latest)
+        self.version_delete.triggered.connect(self.open_version_delete)
         self.generate_build_data.triggered.connect(self.query_build_data_json)
         self.show_mutant_build_color.toggled.connect(self.toggle_mutant_build_color)
 
@@ -161,6 +163,10 @@ class Menu(QtWidgets.QDialog):
         import webbrowser
         webbrowser.open("https://github.com/BluetapeRigging/Blue_Pipeline/archive/refs/heads/main.zip")
         webbrowser.open("https://github.com/BluetapeRigging/Blue_Pipeline")
+
+    def open_version_delete(self):
+        if self.owner and hasattr(self.owner, "open_version_delete_dialog"):
+            self.owner.open_version_delete_dialog()
 
     def query_build_data_json(self):
         try:

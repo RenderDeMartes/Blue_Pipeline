@@ -259,6 +259,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.current_asset = None
         self.current_task = None
         self.scene_opened_job = None
+        self.version_delete_dialog = None
 
         self.setWindowTitle(Title)
         self.where_to_save_files = None
@@ -341,6 +342,20 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.ui.save_wip_button.clicked.connect(self.save_wip)
         self.ui.publish_button.clicked.connect(self.publish_asset)
         self.ui.shows_search_line.textChanged.connect(self.filter_shows)
+
+    def open_version_delete_dialog(self):
+        if not self.project_folder or not os.path.isdir(self.project_folder):
+            QtWidgets.QMessageBox.warning(self, "Project Folder", "Project folder is not valid.")
+            return
+
+        if self.version_delete_dialog is None:
+            self.version_delete_dialog = VersionDeleteDialog(project_folder=self.project_folder, parent=self)
+        else:
+            self.version_delete_dialog.set_project_folder(self.project_folder)
+
+        self.version_delete_dialog.show()
+        self.version_delete_dialog.raise_()
+        self.version_delete_dialog.activateWindow()
 
     def find_name_conflicts(self):
         """
@@ -1548,6 +1563,388 @@ class ImagePreview(QtWidgets.QLabel):
 
             self.setPixmap(pixmap)
             self.setFixedSize(pixmap.size())  # fix label size to pixmap size
+
+
+class VersionDeleteDialog(QtWidgets.QDialog):
+    VALID_EXTENSIONS = ('.ma', '.mb', '.py', '.mel', '.fbx', '.abc')
+    SHOW_FOLDER_PATTERN = re.compile(r"^b\d{4}_.+", re.IGNORECASE)
+
+    def __init__(self, project_folder, parent=None):
+        super(VersionDeleteDialog, self).__init__(parent)
+        self.project_folder = os.path.abspath(project_folder)
+        self.setWindowTitle("Version Delete")
+        self.resize(1300, 760)
+
+        self.show_tabs = QtWidgets.QTabWidget(self)
+        self.show_tabs.setTabPosition(QtWidgets.QTabWidget.North)
+        self._all_tables = []
+
+        self.info_label = QtWidgets.QLabel(
+            "Orange = Has Build Data | Green = Latest in each WIP/Publish folder"
+        )
+
+        self.refresh_btn = QtWidgets.QPushButton("Refresh")
+        self.delete_btn = QtWidgets.QPushButton("Delete Selected")
+        self.close_btn = QtWidgets.QPushButton("Close")
+        self.refresh_btn.setObjectName("BlueButton")
+        self.delete_btn.setObjectName("BlueButton")
+        self.close_btn.setObjectName("BlueButton")
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addWidget(self.refresh_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self.delete_btn)
+        btn_row.addWidget(self.close_btn)
+
+        main_layout = QtWidgets.QVBoxLayout(self)
+        main_layout.addWidget(self.info_label)
+        main_layout.addWidget(self.show_tabs)
+        main_layout.addLayout(btn_row)
+
+        self.refresh_btn.clicked.connect(self.refresh_table)
+        self.delete_btn.clicked.connect(self.delete_selected_files)
+        self.close_btn.clicked.connect(self.close)
+
+        self.refresh_table()
+
+    def set_project_folder(self, project_folder):
+        self.project_folder = os.path.abspath(project_folder)
+        self.refresh_table()
+
+    def _ensure_build_data_loaded(self):
+        query_json = os.path.join(self.project_folder, "Build_Data.json")
+        if os.path.exists(query_json):
+            load_mutant_build_query_data(query_json_path=query_json)
+
+    def _has_build_data(self, file_path):
+        if not BUILD_DATA_QUERY_ENABLED or not BUILD_DATA_QUERY_ROOT:
+            return False
+
+        abs_file_path = os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
+        abs_root_path = os.path.normcase(os.path.normpath(os.path.abspath(BUILD_DATA_QUERY_ROOT)))
+
+        try:
+            if os.path.commonpath([abs_root_path, abs_file_path]) != abs_root_path:
+                return False
+        except ValueError:
+            return False
+
+        rel_path = os.path.relpath(abs_file_path, abs_root_path).replace("\\", "/").lower()
+        return bool(BUILD_DATA_QUERY_FILES.get(rel_path, False))
+
+    def _collect_files(self):
+        grouped = defaultdict(
+            lambda: defaultdict(
+                lambda: defaultdict(
+                    lambda: {"WIP": [], "Publish": []}
+                )
+            )
+        )
+        latest_per_folder = {}
+
+        if not os.path.isdir(self.project_folder):
+            return grouped, latest_per_folder
+
+        show_folders = [
+            name for name in os.listdir(self.project_folder)
+            if os.path.isdir(os.path.join(self.project_folder, name))
+            and self.SHOW_FOLDER_PATTERN.match(name)
+        ]
+
+        for show_name in show_folders:
+            show_path = os.path.join(self.project_folder, show_name)
+            for root, _, files in os.walk(show_path):
+                section = os.path.basename(root)
+                section_lower = section.lower()
+                if section_lower not in ("wip", "publish"):
+                    continue
+
+                folder_key = os.path.normcase(os.path.normpath(root))
+                for file_name in files:
+                    if file_name.startswith('.'):
+                        continue
+                    if not file_name.lower().endswith(self.VALID_EXTENSIONS):
+                        continue
+
+                    full_path = os.path.join(root, file_name)
+                    try:
+                        mtime = os.path.getmtime(full_path)
+                    except Exception:
+                        continue
+
+                    rel_folder = os.path.relpath(root, show_path).replace("\\", "/")
+                    asset_name, task_name = self._extract_asset_task(root, show_path)
+                    section_name = "WIP" if section_lower == "wip" else "Publish"
+
+                    row = {
+                        "show": show_name,
+                        "section": section_name,
+                        "task": task_name,
+                        "folder": rel_folder,
+                        "file": file_name,
+                        "date": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                        "mtime": mtime,
+                        "path": full_path,
+                    }
+                    grouped[show_name][asset_name][task_name][section_name].append(row)
+
+                    current_latest = latest_per_folder.get(folder_key)
+                    if current_latest is None or mtime > current_latest:
+                        latest_per_folder[folder_key] = mtime
+
+        return grouped, latest_per_folder
+
+    def _extract_asset_task(self, section_folder_path, show_path):
+        rel = os.path.relpath(section_folder_path, show_path)
+        parts = [p for p in rel.replace("\\", "/").split("/") if p]
+
+        if not parts:
+            return "_root_asset_", "_root_task_"
+
+        if parts[-1].lower() in ("wip", "publish"):
+            parts = parts[:-1]
+
+        if parts and parts[-1].lower() == "scenes":
+            parts = parts[:-1]
+
+        if not parts:
+            return "_root_asset_", "_root_task_"
+
+        asset_name = parts[0]
+        task_name = "/".join(parts[1:]) if len(parts) > 1 else "_root_task_"
+        return asset_name, task_name
+
+    def _create_section_table(self):
+        table = QtWidgets.QTableWidget(self)
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["Select", "Folder", "File", "Date", "Path"])
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setSortingEnabled(False)
+        table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(lambda pos, t=table: self._show_table_context_menu(t, pos))
+        return table
+
+    def _show_table_context_menu(self, table, position):
+        index = table.indexAt(position)
+        if not index.isValid():
+            return
+
+        row = index.row()
+        path_item = table.item(row, 4)
+        if not path_item:
+            return
+
+        file_path = path_item.text()
+        if not file_path:
+            return
+
+        menu = QtWidgets.QMenu(table)
+        open_file_action = menu.addAction("Open File")
+        open_folder_action = menu.addAction("Open Folder")
+
+        action = menu.exec_(table.viewport().mapToGlobal(position))
+        if action == open_file_action:
+            self._open_file(file_path)
+        elif action == open_folder_action:
+            self._open_file_folder(file_path)
+
+    def _open_file(self, file_path):
+        if not os.path.exists(file_path):
+            QtWidgets.QMessageBox.warning(self, "Open File", f"File not found:\n{file_path}")
+            return
+
+        try:
+            if os.name == "nt":
+                os.startfile(file_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", file_path])
+            else:
+                subprocess.Popen(["xdg-open", file_path])
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Open File", f"Could not open file:\n{file_path}\n\n{exc}")
+
+    def _open_file_folder(self, file_path):
+        folder_path = os.path.dirname(file_path)
+        if not os.path.isdir(folder_path):
+            QtWidgets.QMessageBox.warning(self, "Open Folder", f"Folder not found:\n{folder_path}")
+            return
+
+        try:
+            if os.name == "nt":
+                os.startfile(folder_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder_path])
+            else:
+                subprocess.Popen(["xdg-open", folder_path])
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Open Folder", f"Could not open folder:\n{folder_path}\n\n{exc}")
+
+    def _populate_section_table(self, table, rows, latest_per_folder):
+        table.setRowCount(0)
+        rows = sorted(rows, key=lambda x: x["mtime"], reverse=True)
+
+        orange = QtGui.QColor(255, 159, 26)
+        green = QtGui.QColor(0, 220, 120)
+
+        for row_data in rows:
+            row_index = table.rowCount()
+            table.insertRow(row_index)
+
+            select_item = QtWidgets.QTableWidgetItem()
+            select_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsSelectable)
+            select_item.setCheckState(QtCore.Qt.Unchecked)
+
+            folder_item = QtWidgets.QTableWidgetItem(row_data["folder"])
+            file_item = QtWidgets.QTableWidgetItem(row_data["file"])
+            date_item = QtWidgets.QTableWidgetItem(row_data["date"])
+            path_item = QtWidgets.QTableWidgetItem(row_data["path"])
+
+            table.setItem(row_index, 0, select_item)
+            table.setItem(row_index, 1, folder_item)
+            table.setItem(row_index, 2, file_item)
+            table.setItem(row_index, 3, date_item)
+            table.setItem(row_index, 4, path_item)
+
+            folder_abs = os.path.normcase(os.path.normpath(os.path.dirname(row_data["path"])))
+            is_latest = row_data["mtime"] == latest_per_folder.get(folder_abs)
+            has_build_data = self._has_build_data(row_data["path"])
+
+            if has_build_data:
+                color = orange
+            elif is_latest:
+                color = green
+            else:
+                color = None
+
+            if color:
+                for col in range(1, 5):
+                    item = table.item(row_index, col)
+                    if item:
+                        item.setForeground(QtGui.QBrush(color))
+
+        table.resizeColumnsToContents()
+        table.setColumnWidth(0, 60)
+
+    def _clear_show_tabs(self):
+        self.show_tabs.clear()
+        self._all_tables = []
+
+    def refresh_table(self):
+        self._ensure_build_data_loaded()
+        grouped, latest_per_folder = self._collect_files()
+
+        self._clear_show_tabs()
+
+        for show_name in sorted(grouped.keys()):
+            asset_tabs = QtWidgets.QTabWidget(self)
+            asset_tabs.setTabPosition(QtWidgets.QTabWidget.North)
+            assets_data = grouped[show_name]
+
+            for asset_name in sorted(assets_data.keys()):
+                task_tabs = QtWidgets.QTabWidget(self)
+                task_tabs.setTabPosition(QtWidgets.QTabWidget.North)
+                tasks_data = assets_data[asset_name]
+
+                for task_name in sorted(tasks_data.keys()):
+                    task_widget = QtWidgets.QWidget(self)
+                    task_layout = QtWidgets.QHBoxLayout(task_widget)
+
+                    wip_group = QtWidgets.QGroupBox("WIP", task_widget)
+                    pub_group = QtWidgets.QGroupBox("Publish", task_widget)
+
+                    wip_layout = QtWidgets.QVBoxLayout(wip_group)
+                    pub_layout = QtWidgets.QVBoxLayout(pub_group)
+
+                    wip_table = self._create_section_table()
+                    pub_table = self._create_section_table()
+
+                    wip_layout.addWidget(wip_table)
+                    pub_layout.addWidget(pub_table)
+
+                    task_layout.addWidget(wip_group)
+                    task_layout.addWidget(pub_group)
+
+                    self._populate_section_table(wip_table, tasks_data[task_name]["WIP"], latest_per_folder)
+                    self._populate_section_table(pub_table, tasks_data[task_name]["Publish"], latest_per_folder)
+
+                    self._all_tables.extend([wip_table, pub_table])
+                    task_tabs.addTab(task_widget, task_name)
+
+                asset_tabs.addTab(task_tabs, asset_name)
+
+            self.show_tabs.addTab(asset_tabs, show_name)
+
+        if self.show_tabs.count() == 0:
+            empty = QtWidgets.QWidget(self)
+            empty_layout = QtWidgets.QVBoxLayout(empty)
+            empty_layout.addWidget(QtWidgets.QLabel("No WIP/Publish files found in project folder."))
+            self.show_tabs.addTab(empty, "No Shows")
+
+    def _get_selected_paths(self):
+        paths = []
+
+        for table in self._all_tables:
+            for row in range(table.rowCount()):
+                check_item = table.item(row, 0)
+                path_item = table.item(row, 4)
+                if not check_item or not path_item:
+                    continue
+                if check_item.checkState() == QtCore.Qt.Checked:
+                    paths.append(path_item.text())
+
+        if paths:
+            return sorted(set(paths))
+
+        for table in self._all_tables:
+            selected_rows = table.selectionModel().selectedRows()
+            for model_index in selected_rows:
+                row = model_index.row()
+                path_item = table.item(row, 4)
+                if path_item:
+                    paths.append(path_item.text())
+
+        return sorted(set(paths))
+
+    def delete_selected_files(self):
+        paths = self._get_selected_paths()
+        if not paths:
+            QtWidgets.QMessageBox.information(self, "Delete Selected", "No files selected.")
+            return
+
+        confirm = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Delete",
+            f"Delete {len(paths)} selected file(s)?\nThis cannot be undone.",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            return
+
+        deleted = 0
+        failed = []
+        for path in paths:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                    deleted += 1
+            except Exception as exc:
+                failed.append(f"{path} ({exc})")
+
+        if failed:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Delete Completed with Errors",
+                f"Deleted {deleted} file(s).\nFailed: {len(failed)}\n\n" + "\n".join(failed[:8]),
+            )
+        else:
+            QtWidgets.QMessageBox.information(self, "Delete Completed", f"Deleted {deleted} file(s).")
+
+        self.refresh_table()
 
 
 def open_settings(path):
