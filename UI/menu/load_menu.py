@@ -90,9 +90,9 @@ class Menu(QtWidgets.QDialog):
 
         #Create Menu Actions on File Section
         self.nda_mode = self.fileMenu.addAction('NDA Mode')
+        self.version_delete = self.fileMenu.addAction('Version Delete')
         self.fileMenu.addSeparator()
         self.download_latest = self.fileMenu.addAction('Download Latest')
-        self.version_delete = self.fileMenu.addAction('Version Delete')
         self.fileMenu.addSeparator()
 
         # -------------------------------------------------------------------
