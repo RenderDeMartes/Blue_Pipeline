@@ -55,8 +55,9 @@ def maya_main_window():
 
 class Menu(QtWidgets.QDialog):
 
-    def __init__(self, parent=maya_main_window()):
+    def __init__(self, parent=maya_main_window(), owner=None):
         super(Menu, self).__init__(parent)
+        self.owner = owner
 
         self.setWindowTitle(Title)
         self.setFixedHeight(20)
@@ -93,8 +94,19 @@ class Menu(QtWidgets.QDialog):
         self.download_latest = self.fileMenu.addAction('Download Latest')
         self.fileMenu.addSeparator()
 
+        # -------------------------------------------------------------------
+        #Rig Menu
+        self.rigMenu = QtWidgets.QMenu(self)
+        self.rigMenu.setTitle("Rig")
+        self.generate_build_data = self.rigMenu.addAction('Query Build Data')
+        self.rigMenu.addSeparator()
+        self.show_mutant_build_color = self.rigMenu.addAction('Show Mutant Build Color')
+        self.show_mutant_build_color.setCheckable(True)
+        self.show_mutant_build_color.setChecked(False)
+
         #Add actions to file menu
         self.menuBar.addMenu(self.fileMenu)
+        self.menuBar.addMenu(self.rigMenu)
 
         #Add to menu UI
         self.ui.menuLayout.insertWidget(0, self.menuBar)
@@ -105,6 +117,8 @@ class Menu(QtWidgets.QDialog):
         #FILE MENU
         self.nda_mode.triggered.connect(self.toggle_nda_mode)
         self.download_latest.triggered.connect(self.open_link_donwload_latest)
+        self.generate_build_data.triggered.connect(self.query_build_data_json)
+        self.show_mutant_build_color.toggled.connect(self.toggle_mutant_build_color)
 
     # -------------------------------------------------------------------
 
@@ -147,6 +161,50 @@ class Menu(QtWidgets.QDialog):
         import webbrowser
         webbrowser.open("https://github.com/BluetapeRigging/Blue_Pipeline/archive/refs/heads/main.zip")
         webbrowser.open("https://github.com/BluetapeRigging/Blue_Pipeline")
+
+    def query_build_data_json(self):
+        try:
+            from Blue_Pipeline.UI.assets_manager import load_asset_manager
+            report = load_asset_manager.build_mutant_build_data(root_path="E:/BlueTape", keyword="mutant_build")
+            if not report:
+                return
+
+            load_asset_manager.load_mutant_build_query_data(query_json_path="E:/BlueTape/Build_Data.json")
+
+            if self.owner and hasattr(self.owner, "populate_files"):
+                show_name = getattr(self.owner, "current_show", None)
+                asset_name = getattr(self.owner, "current_asset", None)
+                task_name = getattr(self.owner, "current_task", None)
+                if show_name and asset_name and task_name:
+                    self.owner.populate_files(show_name, asset_name, task_name)
+
+            summary = report.get("summary", {})
+            cmds.inViewMessage(
+                amg=(
+                    f"Build_Data.json updated: "
+                    f"<hl>{summary.get('with_mutant_build', 0)}</hl> with build / "
+                    f"<hl>{summary.get('without_mutant_build', 0)}</hl> without build"
+                ),
+                pos="botCenter",
+                fade=True,
+                fadeStayTime=2500,
+            )
+        except Exception as e:
+            cmds.warning(f"Failed to generate Build_Data.json: {e}")
+
+    def toggle_mutant_build_color(self, enabled):
+        try:
+            from Blue_Pipeline.UI.assets_manager import load_asset_manager
+            load_asset_manager.set_mutant_build_color_enabled(enabled)
+
+            if self.owner and hasattr(self.owner, "populate_files"):
+                show_name = getattr(self.owner, "current_show", None)
+                asset_name = getattr(self.owner, "current_asset", None)
+                task_name = getattr(self.owner, "current_task", None)
+                if show_name and asset_name and task_name:
+                    self.owner.populate_files(show_name, asset_name, task_name)
+        except Exception as e:
+            cmds.warning(f"Failed to toggle Mutant Build color: {e}")
 
     # CLOSE EVENTS _________________________________
     def closeEvent(self, event):

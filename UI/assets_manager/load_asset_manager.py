@@ -68,6 +68,7 @@ import sys
 import json
 import glob
 import pprint
+from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 
@@ -103,10 +104,150 @@ Qt_Blue = QtBlueWindow.Qt_Blue()
 
 # -------------------------------------------------------------------
 
+BUILD_DATA_QUERY_ENABLED = False
+BUILD_DATA_QUERY_ROOT = None
+BUILD_DATA_QUERY_FILES = {}
+BUILD_DATA_COLOR_ENABLED = False
+
 
 def maya_main_window():
     main_window_ptr = omui.MQtUtil.mainWindow()
     return wrapInstance(int(main_window_ptr), QtWidgets.QWidget)
+
+
+def build_mutant_build_data(root_path="E:/BlueTape", keyword="mutant_build"):
+    """
+    Scan all .ma files under root_path and save a JSON report with files that
+    contain keyword and files that do not.
+
+    Args:
+        root_path (str): Root folder that contains all show folders.
+        keyword (str): Text to search inside .ma files.
+
+    Returns:
+        dict or None: Report dictionary if successful, otherwise None.
+    """
+    root_path = os.path.abspath(root_path)
+    output_json_path = os.path.join(root_path, "Build_Data.json")
+
+    if not os.path.isdir(root_path):
+        cmds.warning(f"Invalid root path: {root_path}")
+        return None
+
+    ma_files = glob.glob(os.path.join(root_path, "**", "*.ma"), recursive=True)
+
+    keyword_lower = (keyword or "").lower()
+
+    report = {
+        "root_path": root_path,
+        "keyword": keyword_lower,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "files_with_mutant_build": [],
+        "files_without_mutant_build": [],
+        "read_errors": {},
+        "files": {}
+    }
+
+    for file_path in ma_files:
+        rel_path = os.path.relpath(file_path, root_path).replace("\\", "/")
+        has_keyword = False
+
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    if keyword_lower in line.lower():
+                        has_keyword = True
+                        break
+        except Exception as e:
+            report["read_errors"][rel_path] = str(e)
+            report["files"][rel_path] = None
+            continue
+
+        report["files"][rel_path] = has_keyword
+        if has_keyword:
+            report["files_with_mutant_build"].append(rel_path)
+        else:
+            report["files_without_mutant_build"].append(rel_path)
+
+    report["files_with_mutant_build"].sort()
+    report["files_without_mutant_build"].sort()
+    report["summary"] = {
+        "total_ma_files": len(ma_files),
+        "with_mutant_build": len(report["files_with_mutant_build"]),
+        "without_mutant_build": len(report["files_without_mutant_build"]),
+        "read_errors": len(report["read_errors"]),
+    }
+
+    with open(output_json_path, "w", encoding="utf-8") as json_file:
+        json.dump(report, json_file, indent=4, ensure_ascii=False)
+
+    print(f"[INFO] Build data saved to: {output_json_path}")
+    return report
+
+
+def load_mutant_build_query_data(query_json_path="E:/BlueTape/Build_Data.json"):
+    """
+    Load Build_Data.json into memory for query-only UI highlighting.
+    Returns parsed data when loaded, otherwise None.
+    """
+    global BUILD_DATA_QUERY_ENABLED
+    global BUILD_DATA_QUERY_ROOT
+    global BUILD_DATA_QUERY_FILES
+
+    if not os.path.exists(query_json_path):
+        return None
+
+    try:
+        with open(query_json_path, "r", encoding="utf-8") as json_file:
+            data = json.load(json_file)
+    except Exception:
+        return None
+
+    files_data = data.get("files", {})
+    root_path = data.get("root_path", "")
+    if not isinstance(files_data, dict) or not root_path:
+        return None
+
+    normalized_files = {}
+    for rel_path, value in files_data.items():
+        key = str(rel_path).replace("\\", "/").lower()
+        normalized_files[key] = bool(value)
+
+    BUILD_DATA_QUERY_ROOT = os.path.abspath(root_path)
+    BUILD_DATA_QUERY_FILES = normalized_files
+    BUILD_DATA_QUERY_ENABLED = True
+    return data
+
+
+def set_mutant_build_color_enabled(enabled=True):
+    global BUILD_DATA_COLOR_ENABLED
+    BUILD_DATA_COLOR_ENABLED = bool(enabled)
+
+
+def get_mutant_build_flag_from_query(file_path):
+    if not BUILD_DATA_COLOR_ENABLED:
+        return False
+
+    if not BUILD_DATA_QUERY_ENABLED:
+        return False
+
+    if not file_path.lower().endswith(".ma"):
+        return False
+
+    if not BUILD_DATA_QUERY_ROOT:
+        return False
+
+    abs_file_path = os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
+    abs_root_path = os.path.normcase(os.path.normpath(os.path.abspath(BUILD_DATA_QUERY_ROOT)))
+
+    try:
+        if os.path.commonpath([abs_root_path, abs_file_path]) != abs_root_path:
+            return False
+    except ValueError:
+        return False
+
+    rel_path = os.path.relpath(abs_file_path, abs_root_path).replace("\\", "/").lower()
+    return bool(BUILD_DATA_QUERY_FILES.get(rel_path, False))
 
 
 class AssetsManagerUI(QtBlueWindow.Qt_Blue):
@@ -879,6 +1020,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
 
                 full_path = os.path.join(folder, f)
                 json_path = os.path.splitext(full_path)[0] + ".json"
+                has_mutant_build = get_mutant_build_flag_from_query(full_path)
 
                 tooltip_text = ""
                 if os.path.exists(json_path):
@@ -893,8 +1035,11 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                 row = QtWidgets.QVBoxLayout()
 
                 label = QtWidgets.QLabel(f)
-                label.setStyleSheet("font-size: 12px; font-weight: bold;")
+                label_color = "#ff9f1a" if has_mutant_build else "white"
+                label.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {label_color};")
                 label.setWordWrap(True)
+                if has_mutant_build:
+                    tooltip_text = (tooltip_text + "\n" if tooltip_text else "") + "Mutant Build: True"
                 if tooltip_text:
                     label.setToolTip(tooltip_text)
 
@@ -1287,8 +1432,6 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
     #----------------------------------------------------------------
     # ---------------------------------------------------------------
     # ---------------------Wip and Publish---------------------------
-    # ---------------------------------------------------------------
-
     def save_wip(self):
         import Blue_Pipeline
         from Blue_Pipeline.UI.assets_manager import load_save_wip
