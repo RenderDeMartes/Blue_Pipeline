@@ -117,6 +117,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.current_show = None
         self.current_asset = None
         self.current_task = None
+        self.scene_opened_job = None
 
         self.setWindowTitle(Title)
         self.where_to_save_files = None
@@ -132,6 +133,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.create_connections()
 
         self.find_name_conflicts()
+        self.register_scene_opened_callback()
         QtCore.QTimer.singleShot(0, self.force_initial_resize)
 
 
@@ -163,6 +165,26 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         size = self.size()
         self.resize(size.width() + 1, size.height() + 1)
         self.resize(size)
+
+    def register_scene_opened_callback(self):
+        self.unregister_scene_opened_callback()
+        try:
+            self.scene_opened_job = cmds.scriptJob(event=["SceneOpened", self.on_scene_opened], protected=True)
+        except Exception as e:
+            cmds.warning(f"Failed to register SceneOpened callback: {e}")
+
+    def unregister_scene_opened_callback(self):
+        if self.scene_opened_job and cmds.scriptJob(exists=self.scene_opened_job):
+            try:
+                cmds.scriptJob(kill=self.scene_opened_job, force=True)
+            except Exception as e:
+                cmds.warning(f"Failed to remove SceneOpened callback: {e}")
+        self.scene_opened_job = None
+
+    def on_scene_opened(self):
+        scene_path = cmds.file(q=True, sn=True)
+        if scene_path:
+            self.set_project_from_scene(scene_path)
 
     def create_connections(self):
         """
@@ -453,6 +475,99 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         if new_path:
             self.project_folder = new_path
             self.populate_shows()  # Rebuild UI with new folder
+
+    def get_show_root_from_scene(self, scene_path):
+        if not scene_path:
+            return None
+
+        scene_path = os.path.abspath(scene_path)
+
+        if self.project_folder:
+            project_root = os.path.abspath(self.project_folder)
+            try:
+                if os.path.commonpath([project_root, scene_path]) == project_root:
+                    rel_path = os.path.relpath(scene_path, project_root)
+                    show_folder = rel_path.split(os.sep)[0]
+                    if re.match(r"^b\d{4}_.+", show_folder, re.IGNORECASE):
+                        return os.path.join(project_root, show_folder)
+            except ValueError:
+                pass
+
+        current_dir = os.path.dirname(scene_path)
+        while current_dir and current_dir != os.path.dirname(current_dir):
+            workspace_file = os.path.join(current_dir, "workspace.mel")
+            if os.path.exists(workspace_file):
+                return current_dir
+            current_dir = os.path.dirname(current_dir)
+
+        return None
+
+    def ensure_show_workspace(self, show_root):
+        if not show_root or not os.path.isdir(show_root):
+            return None
+
+        workspace_file = os.path.join(show_root, "workspace.mel")
+        if os.path.exists(workspace_file):
+            return workspace_file
+
+        workspace_lines = [
+            "//Maya 2026 Project Definition\n",
+            "workspace -fr \"scene\" \"scenes\";\n",
+            "workspace -fr \"images\" \"images\";\n",
+            "workspace -fr \"sourceImages\" \"sourceimages\";\n",
+            "workspace -fr \"audio\" \"sound\";\n",
+            "workspace -fr \"scripts\" \"scripts\";\n",
+            "workspace -fr \"diskCache\" \"cache\";\n",
+            "workspace -fr \"fileCache\" \"cache\";\n",
+            "workspace -fr \"data\" \"data\";\n",
+        ]
+
+        with open(workspace_file, "w") as f:
+            f.writelines(workspace_lines)
+
+        print(f"[INFO] Created Maya workspace file: {workspace_file}")
+        return workspace_file
+
+    def set_project_from_scene(self, scene_path):
+        show_root = self.get_show_root_from_scene(scene_path)
+        if not show_root:
+            print(f"[INFO] Could not resolve show root from scene path: {scene_path}")
+            return False
+
+        self.ensure_show_workspace(show_root)
+
+        current_project = cmds.workspace(q=True, rootDirectory=True) or ""
+
+        def _normalize_path(path):
+            return os.path.normcase(os.path.normpath(os.path.abspath(path or "")))
+
+        target_norm = _normalize_path(show_root)
+        current_norm = _normalize_path(current_project)
+        project_was_different = target_norm != current_norm
+
+        maya_project_path = show_root.replace("\\", "/")
+        try:
+            mel.eval(f'setProject "{maya_project_path}";')
+        except Exception:
+            try:
+                cmds.workspace(maya_project_path, openWorkspace=True)
+            except Exception as e:
+                cmds.warning(f"Failed to set project to {show_root}: {e}")
+                return False
+
+        if project_was_different:
+            try:
+                cmds.inViewMessage(
+                    amg=f"Project has been set to: <hl>{os.path.basename(show_root)}</hl>",
+                    pos="botCenter",
+                    fade=True,
+                    fadeStayTime=2000,
+                )
+            except Exception:
+                pass
+
+        print(f"[INFO] Maya project set to show workspace: {show_root}")
+        return True
 
     #----------------------------------------------------------
     #-----------------------Add To UI -------------------------
@@ -867,6 +982,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
     def import_maya_scene(self, file_path):
         try:
             file_path = file_path.replace("\\", "/")
+            self.set_project_from_scene(file_path)
             cmds.file(file_path, i=True, ignoreVersion=True, ra=True, mergeNamespacesOnClash=False, namespace=":")
             print(f"Imported: {file_path}")
         except Exception as e:
@@ -875,6 +991,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
     def reference_maya_scene(self, file_path):
         try:
             file_path = file_path.replace("\\", "/")
+            self.set_project_from_scene(file_path)
             cmds.file(file_path, r=True, ignoreVersion=True, gl=True, mergeNamespacesOnClash=False,
                       namespace=os.path.splitext(os.path.basename(file_path))[0])
             print(f"Referenced: {file_path}")
@@ -912,6 +1029,8 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                     return
         # If 'Don't Save' is selected, just continue
 
+        self.set_project_from_scene(file_path)
+
         # Use MEL to open and add to recent files
         file_path = file_path.replace("\\", "/")
         mel_cmd = (
@@ -923,6 +1042,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
     def reference_maya_scene(self, file_path):
         """References the Maya scene at the given path."""
         if os.path.exists(file_path):
+            self.set_project_from_scene(file_path)
             cmds.file(file_path, reference=True, namespace=os.path.splitext(os.path.basename(file_path))[0])
         else:
             print(f"[ERROR] File does not exist: {file_path}")
@@ -975,6 +1095,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         # Create folder
         try:
             os.makedirs(new_folder_path)
+            self.ensure_show_workspace(new_folder_path)
             print(f"[INFO] Created new show: {new_folder_path}")
             self.populate_shows()  # Refresh the UI
         except Exception as e:
@@ -1195,7 +1316,8 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
 
     # CLOSE EVENTS _________________________________
     def closeEvent(self, event):
-        ''
+        self.unregister_scene_opened_callback()
+        super(AssetsManagerUI, self).closeEvent(event)
 
 
 # -------------------------------------------------------------------
