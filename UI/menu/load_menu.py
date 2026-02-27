@@ -373,7 +373,7 @@ class Menu(QtWidgets.QDialog):
             reload(EasySkin)
 
             clean_asset_name = self._get_clean_asset_name(paths["asset_name"])
-            version_prefix = "{}_Ctrls_".format(clean_asset_name)
+            version_prefix = "{}_Skin_".format(clean_asset_name)
             version_name = self._next_version_name_from_paths(
                 paths["skin_path"],
                 folders=True,
@@ -447,7 +447,7 @@ class Menu(QtWidgets.QDialog):
             reload(EasySkin)
 
             clean_asset_name = self._get_clean_asset_name(paths["asset_name"])
-            version_prefix = "{}_Ctrls_".format(clean_asset_name)
+            version_prefix = "{}_Skin_".format(clean_asset_name)
             latest_name = self._latest_version_name_from_paths(
                 paths["skin_path"],
                 folders=True,
@@ -534,7 +534,7 @@ class Menu(QtWidgets.QDialog):
             reload(EasySkin)
 
             clean_asset_name = self._get_clean_asset_name(paths["asset_name"])
-            version_prefix = "{}_Ctrls_".format(clean_asset_name)
+            version_prefix = "{}_Skin_".format(clean_asset_name)
             versions = self._all_version_names_from_paths(
                 paths["skin_path"],
                 folders=True,
