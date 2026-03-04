@@ -56,6 +56,8 @@ import maya.mel as mel
 
 import os
 import re
+import builtins
+import keyword
 import subprocess
 import tempfile
 
@@ -260,6 +262,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.current_task = None
         self.scene_opened_job = None
         self.version_delete_dialog = None
+        self._script_highlighters = []
 
         self.setWindowTitle(Title)
         self.where_to_save_files = None
@@ -1180,6 +1183,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             task_name (str): Task folder name.
         """
         self.current_task = task_name
+        self._script_highlighters = []
         # Save last task as well
         self.set_last_used_show(self.current_show, current_asset=self.current_asset, current_task=self.current_task)
 
@@ -1256,12 +1260,38 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                     except Exception as e:
                         script_text = f"Could not read file: {e}"
 
-                    text_edit = QtWidgets.QTextEdit()
+                    text_edit = QtWidgets.QPlainTextEdit()
                     text_edit.setPlainText(script_text)
                     text_edit.setReadOnly(True)
-                    text_edit.setFixedHeight(150)  # Adjust as needed
-                    text_edit.setStyleSheet("font-size: 8px;")
+                    text_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+                    text_edit.setFixedHeight(170)
+                    code_font = QtGui.QFont("Consolas")
+                    code_font.setStyleHint(QtGui.QFont.Monospace)
+                    code_font.setFixedPitch(True)
+                    text_edit.setFont(code_font)
+                    text_edit.setStyleSheet(
+                        "QPlainTextEdit {"
+                        "font-size: 10px;"
+                        "background-color: #1e1e1e;"
+                        "color: #d4d4d4;"
+                        "selection-background-color: #264f78;"
+                        "border: 1px solid #2d2d2d;"
+                        "}"
+                    )
+
+                    space_width = text_edit.fontMetrics().horizontalAdvance(" ") if hasattr(text_edit.fontMetrics(), "horizontalAdvance") else text_edit.fontMetrics().width(" ")
+                    tab_stop = space_width * 4
+                    if hasattr(text_edit, "setTabStopDistance"):
+                        text_edit.setTabStopDistance(tab_stop)
+                    else:
+                        text_edit.setTabStopWidth(tab_stop)
+
                     text_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
+
+                    language = "python" if f.lower().endswith(".py") else "mel"
+                    highlighter = ScriptSyntaxHighlighter(text_edit.document(), language=language)
+                    self._script_highlighters.append(highlighter)
+
                     row.addWidget(text_edit)
                 else:
                     # Default Maya file handling → three buttons (Open, Import, Reference and settings)
@@ -1755,6 +1785,199 @@ class ImagePreview(QtWidgets.QLabel):
 
             self.setPixmap(pixmap)
             self.setFixedSize(pixmap.size())  # fix label size to pixmap size
+
+
+class ScriptSyntaxHighlighter(QtGui.QSyntaxHighlighter):
+    PY_TRIPLE_SINGLE_STATE = 1
+    PY_TRIPLE_DOUBLE_STATE = 2
+    MEL_BLOCK_COMMENT_STATE = 3
+
+    def __init__(self, document, language="python"):
+        super(ScriptSyntaxHighlighter, self).__init__(document)
+        self.language = str(language or "python").lower()
+        self.rules = []
+        self.todo_pattern = re.compile(r"\b(TODO|FIXME|NOTE|BUG)\b")
+
+        self.keyword_format = self._format("#569CD6", bold=True)
+        self.builtin_format = self._format("#4EC9B0")
+        self.type_format = self._format("#4FC1FF")
+        self.string_format = self._format("#CE9178")
+        self.comment_format = self._format("#6A9955", italic=True)
+        self.number_format = self._format("#B5CEA8")
+        self.function_format = self._format("#DCDCAA")
+        self.class_format = self._format("#4FC1FF", bold=True)
+        self.decorator_format = self._format("#C586C0")
+        self.variable_format = self._format("#9CDCFE")
+        self.operator_format = self._format("#D4D4D4")
+        self.brace_format = self._format("#D7BA7D")
+        self.todo_format = self._format("#FF8C00", bold=True)
+
+        self._build_rules()
+
+    def _format(self, color, bold=False, italic=False):
+        text_format = QtGui.QTextCharFormat()
+        text_format.setForeground(QtGui.QColor(color))
+        if bold:
+            text_format.setFontWeight(QtGui.QFont.Bold)
+        if italic:
+            text_format.setFontItalic(True)
+        return text_format
+
+    def _add_word_rule(self, words, text_format):
+        if not words:
+            return
+        pattern = r"\\b(" + "|".join(re.escape(w) for w in words) + r")\\b"
+        self.rules.append((re.compile(pattern), text_format, 0))
+
+    def _add_regex_rule(self, pattern, text_format, group_index=0, flags=0):
+        self.rules.append((re.compile(pattern, flags), text_format, group_index))
+
+    def _highlight_rule_matches(self, text, pattern, text_format, group_index=0):
+        for match in pattern.finditer(text):
+            if group_index > 0 and match.lastindex and group_index <= match.lastindex:
+                start = match.start(group_index)
+                end = match.end(group_index)
+            else:
+                start = match.start()
+                end = match.end()
+
+            if start >= 0 and end >= start:
+                self.setFormat(start, end - start, text_format)
+
+    def _build_rules(self):
+        if self.language == "python":
+            python_keywords = list(keyword.kwlist)
+            python_builtins = [name for name in dir(builtins) if not name.startswith("_")]
+            python_specials = ["self", "cls", "True", "False", "None"]
+
+            self._add_word_rule(python_keywords, self.keyword_format)
+            self._add_word_rule(python_builtins, self.builtin_format)
+            self._add_word_rule(python_specials, self.type_format)
+
+            self._add_regex_rule(r"^\s*(@[\w\.]+)", self.decorator_format, group_index=1)
+            self._add_regex_rule(r"\\bclass\\s+([A-Za-z_]\\w*)", self.class_format, group_index=1)
+            self._add_regex_rule(r"\\bdef\\s+([A-Za-z_]\\w*)", self.function_format, group_index=1)
+
+            self._add_regex_rule(r"#.*", self.comment_format)
+            self._add_regex_rule(r"(?:[rRuUbBfF]{0,2})'(?:\\.|[^'\\])*'", self.string_format)
+            self._add_regex_rule(r'(?:[rRuUbBfF]{0,2})"(?:\\.|[^"\\])*"', self.string_format)
+
+            self._add_regex_rule(r"\\b0[xX][0-9a-fA-F]+\\b", self.number_format)
+            self._add_regex_rule(r"\\b0[bB][01]+\\b", self.number_format)
+            self._add_regex_rule(r"\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b", self.number_format)
+
+            self._add_regex_rule(r"==|!=|<=|>=|\+=|-=|\*=|/=|%=|\*\*|//|[-+*/%<>=]", self.operator_format)
+            self._add_regex_rule(r"[\[\]{}()]", self.brace_format)
+            self._add_regex_rule(r"\b(TODO|FIXME|NOTE|BUG)\b", self.todo_format)
+
+        else:
+            mel_keywords = [
+                "global", "proc", "if", "else", "for", "while", "break", "continue", "return",
+                "switch", "case", "default", "in", "string", "int", "float", "vector", "matrix",
+                "catch", "warning", "error"
+            ]
+            mel_commands = [
+                "ls", "select", "setAttr", "getAttr", "xform", "parent", "listRelatives",
+                "objExists", "file", "window", "button", "columnLayout", "rowLayout",
+                "group", "rename", "connectAttr", "disconnectAttr", "listConnections", "currentTime",
+                "playbackOptions", "polyCube", "polySphere", "polyPlane", "joint", "skinCluster"
+            ]
+
+            self._add_word_rule(mel_keywords, self.keyword_format)
+            self._add_word_rule(["string", "int", "float", "vector", "matrix"], self.type_format)
+            self._add_word_rule(mel_commands, self.function_format)
+
+            self._add_regex_rule(r"\\$[A-Za-z_]\\w*", self.variable_format)
+            self._add_regex_rule(
+                r"\\bproc\\s+(?:global\\s+)?(?:string|int|float|vector|matrix|void)?\\s*([A-Za-z_]\\w*)",
+                self.function_format,
+                group_index=1,
+            )
+            self._add_regex_rule(r"//.*", self.comment_format)
+            self._add_regex_rule(r"'(?:\\.|[^'\\])*'", self.string_format)
+            self._add_regex_rule(r'"(?:\\.|[^"\\])*"', self.string_format)
+            self._add_regex_rule(r"\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b", self.number_format)
+            self._add_regex_rule(r"==|!=|<=|>=|\+=|-=|\*=|/=|%=|&&|\|\||[-+*/%<>=!]", self.operator_format)
+            self._add_regex_rule(r"[\[\]{}()]", self.brace_format)
+            self._add_regex_rule(r"\b(TODO|FIXME|NOTE|BUG)\b", self.todo_format)
+
+    def _highlight_python_multiline_strings(self, text):
+        quote_types = [
+            ("'''", self.PY_TRIPLE_SINGLE_STATE),
+            ('"""', self.PY_TRIPLE_DOUBLE_STATE),
+        ]
+
+        start_index = 0
+        previous_state = self.previousBlockState()
+
+        if previous_state in (self.PY_TRIPLE_SINGLE_STATE, self.PY_TRIPLE_DOUBLE_STATE):
+            delimiter = "'''" if previous_state == self.PY_TRIPLE_SINGLE_STATE else '"""'
+            end_index = text.find(delimiter, 0)
+            if end_index == -1:
+                self.setFormat(0, len(text), self.string_format)
+                self.setCurrentBlockState(previous_state)
+                return
+            self.setFormat(0, end_index + 3, self.string_format)
+            start_index = end_index + 3
+
+        while start_index < len(text):
+            candidates = []
+            for delimiter, state_value in quote_types:
+                idx = text.find(delimiter, start_index)
+                if idx != -1:
+                    candidates.append((idx, delimiter, state_value))
+
+            if not candidates:
+                return
+
+            quote_start, delimiter, state_value = min(candidates, key=lambda item: item[0])
+            quote_end = text.find(delimiter, quote_start + 3)
+            if quote_end == -1:
+                self.setFormat(quote_start, len(text) - quote_start, self.string_format)
+                self.setCurrentBlockState(state_value)
+                return
+
+            self.setFormat(quote_start, quote_end + 3 - quote_start, self.string_format)
+            start_index = quote_end + 3
+
+    def _highlight_mel_multiline_comments(self, text):
+        start_index = 0
+        if self.previousBlockState() == self.MEL_BLOCK_COMMENT_STATE:
+            end_index = text.find("*/", 0)
+            if end_index == -1:
+                self.setFormat(0, len(text), self.comment_format)
+                self.setCurrentBlockState(self.MEL_BLOCK_COMMENT_STATE)
+                return
+            self.setFormat(0, end_index + 2, self.comment_format)
+            start_index = end_index + 2
+
+        while start_index < len(text):
+            comment_start = text.find("/*", start_index)
+            if comment_start == -1:
+                return
+
+            comment_end = text.find("*/", comment_start + 2)
+            if comment_end == -1:
+                self.setFormat(comment_start, len(text) - comment_start, self.comment_format)
+                self.setCurrentBlockState(self.MEL_BLOCK_COMMENT_STATE)
+                return
+
+            self.setFormat(comment_start, comment_end + 2 - comment_start, self.comment_format)
+            start_index = comment_end + 2
+
+    def highlightBlock(self, text):
+        self.setCurrentBlockState(0)
+
+        for pattern, text_format, group_index in self.rules:
+            self._highlight_rule_matches(text, pattern, text_format, group_index)
+
+        if self.language == "python":
+            self._highlight_python_multiline_strings(text)
+        else:
+            self._highlight_mel_multiline_comments(text)
+
+        for match in self.todo_pattern.finditer(text):
+            self.setFormat(match.start(), match.end() - match.start(), self.todo_format)
 
 
 class VersionDeleteDialog(QtWidgets.QDialog):
