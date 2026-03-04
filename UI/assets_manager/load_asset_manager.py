@@ -1383,9 +1383,11 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
 
     def open_maya_scene(self, file_path):
         """Safely opens a Maya scene, prompting to save if there are unsaved changes."""
-        print(file_path)
-        if not os.path.exists(file_path):
-            print(f"[ERROR] File does not exist: {file_path}")
+        normalized_path = os.path.normpath(file_path)
+        print(normalized_path)
+
+        if not os.path.exists(normalized_path):
+            print(f"[ERROR] File does not exist: {normalized_path}")
             return
 
         # Check for unsaved changes
@@ -1411,15 +1413,41 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                     return
         # If 'Don't Save' is selected, just continue
 
-        self.set_project_from_scene(file_path)
+        self.set_project_from_scene(normalized_path)
 
-        # Use MEL to open and add to recent files
-        file_path = file_path.replace("\\", "/")
-        mel_cmd = (
-            f'file -f -options "v=0;" -ignoreVersion -typ "mayaAscii" -o "{file_path}";'
-            f'if (!`file -q -errorStatus`) {{ addRecentFile("{file_path}", "mayaAscii"); }}'
-        )
-        mel.eval(mel_cmd)
+        maya_path = normalized_path.replace("\\", "/")
+        extension = os.path.splitext(maya_path)[1].lower()
+        file_type_by_ext = {
+            ".ma": "mayaAscii",
+            ".mb": "mayaBinary",
+        }
+        maya_file_type = file_type_by_ext.get(extension)
+
+        try:
+            open_kwargs = {
+                "o": True,
+                "f": True,
+                "ignoreVersion": True,
+                "prompt": False,
+            }
+
+            if maya_file_type:
+                open_kwargs["type"] = maya_file_type
+
+            cmds.file(maya_path, **open_kwargs)
+
+        except Exception as e:
+            cmds.warning(f"Failed to open scene: {maya_path}")
+            cmds.warning(str(e))
+            return
+
+        if maya_file_type:
+            try:
+                mel_safe_path = maya_path.replace('"', '\\"')
+                mel.eval(f'addRecentFile("{mel_safe_path}", "{maya_file_type}")')
+            except Exception as e:
+                cmds.warning(f"Opened scene but failed to update recent files: {maya_path}")
+                cmds.warning(str(e))
 
     def reference_maya_scene(self, file_path):
         """References the Maya scene at the given path."""
