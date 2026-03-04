@@ -988,6 +988,188 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.current_task = None
         self.update_window_title()
 
+    def _extract_component_version_number(self, version_name):
+        match = re.match(r"^v(\d+)$", str(version_name), re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def _get_clean_asset_name(self, asset_name):
+        match = re.match(r"^b\d{4}_(.+)$", str(asset_name), re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return str(asset_name)
+
+    def _get_latest_timestamp_for_path(self, target_path):
+        try:
+            if os.path.isfile(target_path):
+                return os.path.getmtime(target_path)
+
+            if os.path.isdir(target_path):
+                latest = os.path.getmtime(target_path)
+                for root, _, files in os.walk(target_path):
+                    for file_name in files:
+                        file_path = os.path.join(root, file_name)
+                        try:
+                            latest = max(latest, os.path.getmtime(file_path))
+                        except Exception:
+                            pass
+                return latest
+        except Exception:
+            return None
+
+        return None
+
+    def _format_component_timestamp(self, timestamp):
+        if timestamp is None:
+            return "N/A"
+        try:
+            return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return "N/A"
+
+    def _get_component_versions(self, base_path, prefix='', extension=None, folders=False):
+        if not os.path.isdir(base_path):
+            return []
+
+        versions = []
+        for item in os.listdir(base_path):
+            item_path = os.path.join(base_path, item)
+
+            if folders and not os.path.isdir(item_path):
+                continue
+            if not folders and os.path.isdir(item_path):
+                continue
+
+            stem = item
+            if extension:
+                if not item.lower().endswith(extension.lower()):
+                    continue
+                stem = os.path.splitext(item)[0]
+
+            if prefix and not stem.lower().startswith(prefix.lower()):
+                continue
+
+            version_stem = stem[len(prefix):] if prefix else stem
+            version_num = self._extract_component_version_number(version_stem)
+            if version_num is None:
+                continue
+
+            versions.append(
+                {
+                    "version_num": version_num,
+                    "name": stem,
+                    "path": item_path,
+                    "mtime": self._get_latest_timestamp_for_path(item_path),
+                }
+            )
+
+        versions.sort(key=lambda x: x["version_num"], reverse=True)
+        return versions
+
+    def _get_components_visual_data(self, show_path, asset_name):
+        asset_path = os.path.join(self.project_folder, show_path, asset_name)
+        components_path = os.path.join(asset_path, "Components")
+        controllers_path = os.path.join(components_path, "Controllers")
+        skin_path = os.path.join(components_path, "Skin")
+
+        clean_asset_name = self._get_clean_asset_name(asset_name)
+        ctrl_prefix = "{}_Ctrls_".format(clean_asset_name)
+        skin_prefix = "{}_Skin_".format(clean_asset_name)
+
+        controller_versions = self._get_component_versions(
+            controllers_path,
+            prefix=ctrl_prefix,
+            extension=".json",
+            folders=False,
+        )
+        skin_versions = self._get_component_versions(
+            skin_path,
+            prefix=skin_prefix,
+            extension=None,
+            folders=True,
+        )
+
+        return {
+            "Controllers": {
+                "folder": controllers_path,
+                "versions": controller_versions,
+                "latest": controller_versions[0] if controller_versions else None,
+            },
+            "Skin": {
+                "folder": skin_path,
+                "versions": skin_versions,
+                "latest": skin_versions[0] if skin_versions else None,
+            },
+        }
+
+    def _build_component_tooltip(self, component_name, data):
+        latest = data.get("latest")
+        versions = data.get("versions", [])
+
+        if latest:
+            return (
+                f"{component_name}\n"
+                f"Latest: {latest.get('name')}\n"
+                f"Modified: {self._format_component_timestamp(latest.get('mtime'))}\n"
+                f"Versions: {len(versions)}\n"
+                f"Folder: {data.get('folder')}"
+            )
+
+        return (
+            f"{component_name}\n"
+            f"No versions found\n"
+            f"Folder: {data.get('folder')}"
+        )
+
+    def _add_components_visualization(self, layout, show_path, asset_name):
+        components_data = self._get_components_visual_data(show_path, asset_name)
+        menu_widget = getattr(self, "menu", None)
+
+        section_label = QtWidgets.QLabel("Components")
+        section_label.setStyleSheet("font-size: 12px; font-weight: bold;")
+        layout.addWidget(section_label)
+
+        for component_name, data in components_data.items():
+            row_layout = QtWidgets.QHBoxLayout()
+
+            latest = data.get("latest")
+            latest_name = latest.get("name") if latest else "No versions"
+
+            info_label = QtWidgets.QLabel(f"{component_name}: {latest_name}")
+            info_label.setWordWrap(True)
+            tooltip = self._build_component_tooltip(component_name, data)
+            info_label.setToolTip(tooltip)
+            row_layout.addWidget(info_label, 1)
+
+            load_button = QtWidgets.QPushButton(f"Load {component_name}")
+            load_button.setObjectName("BlueButton")
+            load_button.setFixedHeight(24)
+            load_button.setToolTip(tooltip)
+
+            callback = None
+            if menu_widget:
+                if component_name == "Controllers":
+                    callback = getattr(menu_widget, "load_component_controllers_latest", None)
+                elif component_name == "Skin":
+                    callback = getattr(menu_widget, "load_component_skinning_latest", None)
+
+            if latest and callable(callback):
+                load_button.clicked.connect(callback)
+            else:
+                load_button.setEnabled(False)
+
+            row_layout.addWidget(load_button)
+            layout.addLayout(row_layout)
+
+        separator = QtWidgets.QFrame()
+        separator.setFrameShape(QtWidgets.QFrame.HLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        layout.addWidget(separator)
+
     def populate_files(self, show_path, asset_name, task_name):
         """
         Display files in the WIP and Publish folders under the given task.
@@ -1019,8 +1201,14 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             wip_path = os.path.join(task_path, "WIP")
             pub_path = os.path.join(task_path, "Publish")
 
-        def populate(layout, folder):
+        show_components_section = str(task_name).strip().lower() in ("component", "components")
+
+        def populate(layout, folder, include_components=False):
             self.clear_layout(layout)
+
+            if include_components:
+                self._add_components_visualization(layout, show_path, asset_name)
+
             if not os.path.exists(folder):
                 print(f"Folder does not exist: {folder}")
                 return
@@ -1123,10 +1311,14 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                 layout.addLayout(row)
 
         # Populate both layouts
-        populate(self.ui.wip_layout, wip_path)
-        if self.current_task.lower() == 'scripts':
-            populate(self.ui.wip_layout, os.path.join(task_path))
-        populate(self.ui.publish_layout, pub_path)
+        is_scripts_task = self.current_task.lower() == 'scripts'
+        if is_scripts_task:
+            scripts_path = os.path.join(task_path)
+            populate(self.ui.wip_layout, scripts_path, include_components=show_components_section)
+            populate(self.ui.publish_layout, scripts_path, include_components=show_components_section)
+        else:
+            populate(self.ui.wip_layout, wip_path, include_components=show_components_section)
+            populate(self.ui.publish_layout, pub_path, include_components=show_components_section)
 
         self.update_window_title()
 
