@@ -175,12 +175,20 @@ class PublishAsset(QtBlueWindow.Qt_Blue):
         # If no match, default to first item (usually Model)
         self.ui.comboBox.setCurrentIndex(0)
 
-    def _discover_checks(self, department):
-        """Import and instantiate every BaseCheck subclass found in
-        Blue_Pipeline/Checks/<dept_folder>/.  Returns a list of instances."""
-        dept_folder = DEPT_MAP.get(department, department.lower())
-        checks_dir  = os.path.join(FOLDER, 'Checks', dept_folder)
-        instances   = []
+    def _load_checks_from_folder(self, folder_name):
+        """Load checks from a specific folder.
+        
+        Parameters
+        ----------
+        folder_name : str
+            The folder name under Blue_Pipeline/Checks/ (e.g., 'modeling', 'general')
+        
+        Returns
+        -------
+        list : List of BaseCheck instances
+        """
+        checks_dir = os.path.join(FOLDER, 'Checks', folder_name)
+        instances = []
 
         if not os.path.isdir(checks_dir):
             return instances
@@ -188,7 +196,7 @@ class PublishAsset(QtBlueWindow.Qt_Blue):
         for filename in sorted(os.listdir(checks_dir)):
             if filename.startswith('_') or not filename.endswith('.py'):
                 continue
-            module_name = 'Blue_Pipeline.Checks.{}.{}'.format(dept_folder, filename[:-3])
+            module_name = 'Blue_Pipeline.Checks.{}.{}'.format(folder_name, filename[:-3])
             try:
                 module = importlib.import_module(module_name)
                 reload(module)
@@ -202,6 +210,21 @@ class PublishAsset(QtBlueWindow.Qt_Blue):
                         instances.append(cls())
             except Exception as e:
                 cmds.warning('Failed to load check {}: {}'.format(module_name, e))
+
+        return instances
+
+    def _discover_checks(self, department):
+        """Import and instantiate every BaseCheck subclass found in
+        Blue_Pipeline/Checks/<dept_folder>/ and Blue_Pipeline/Checks/general/.
+        Returns a list of instances."""
+        dept_folder = DEPT_MAP.get(department, department.lower())
+        instances = []
+
+        # Load department-specific checks
+        instances.extend(self._load_checks_from_folder(dept_folder))
+
+        # Load general checks (available for all departments)
+        instances.extend(self._load_checks_from_folder('general'))
 
         return instances
 
