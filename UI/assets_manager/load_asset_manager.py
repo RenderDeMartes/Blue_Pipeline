@@ -470,9 +470,80 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         ]
 
         for btn in buttons:
-            btn.setObjectName("BlueButton")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
+            self.configure_blue_button(btn, path_getter=lambda: self.project_folder)
+
+    def _resolve_path_value(self, path_getter):
+        if callable(path_getter):
+            try:
+                return path_getter()
+            except Exception:
+                return None
+        return path_getter
+
+    def configure_blue_button(self, button, path_getter=None, enable_right_click_open=True):
+        if button is None:
+            return
+
+        try:
+            button.setObjectName("BlueButton")
+            app_style = QtWidgets.QApplication.style()
+            if app_style:
+                app_style.unpolish(button)
+                app_style.polish(button)
+
+            button.setProperty("_blue_path_getter", path_getter)
+            button.setProperty("_blue_enable_right_click_open", bool(enable_right_click_open))
+            if not button.property("_blue_ctx_connected"):
+                button.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+                button.customContextMenuRequested.connect(partial(self._on_button_context_menu, button))
+                button.setProperty("_blue_ctx_connected", True)
+        except RuntimeError:
+            return
+
+    def _on_button_context_menu(self, button, _point):
+        try:
+            if not button.property("_blue_enable_right_click_open"):
+                return
+            target_path = self._resolve_path_value(button.property("_blue_path_getter"))
+            if target_path:
+                self.open_path_location(target_path)
+        except RuntimeError:
+            return
+
+    def configure_copy_path_label(self, label, path_getter=None):
+        if label is None:
+            return
+
+        try:
+            label.setProperty("_copy_path_getter", path_getter)
+            if not label.property("_copy_ctx_connected"):
+                label.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+                label.customContextMenuRequested.connect(partial(self._on_label_context_menu, label))
+                label.setProperty("_copy_ctx_connected", True)
+        except RuntimeError:
+            return
+
+    def _on_label_context_menu(self, label, _point):
+        try:
+            copy_path = self._resolve_path_value(label.property("_copy_path_getter"))
+            if not copy_path and hasattr(label, "text"):
+                copy_path = label.text()
+
+            if not copy_path:
+                return
+
+            menu = QtWidgets.QMenu(label)
+            copy_action = menu.addAction("Copy path")
+            selected_action = menu.exec_(QtGui.QCursor.pos())
+
+            if selected_action == copy_action:
+                QtWidgets.QApplication.clipboard().setText(str(copy_path))
+                try:
+                    cmds.inViewMessage(amg=f"Copied path: <hl>{copy_path}</hl>", pos='topCenter', fade=True)
+                except Exception:
+                    pass
+        except RuntimeError:
+            return
 
     def get_default_json_path(self):
         """
@@ -772,11 +843,12 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             if nda_mode:
                 pretty_label = f"{pretty_label[0]}*****{pretty_label[-1]}"
 
+            full_show_path = os.path.join(self.project_folder, path)
             button = QtWidgets.QPushButton(pretty_label)
             button._show_name = name.lower()  # searchable name
             button._show_path = path  # full folder
 
-            button.setObjectName("BlueButton")
+            self.configure_blue_button(button, path_getter=full_show_path)
             button.setFixedSize(80, 40)
             if not nda_mode:
                 button.setToolTip(f"{name}: {path}")
@@ -909,6 +981,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             label.setStyleSheet("font-size: 10px;")
             label.setFixedWidth(80)
             label.setWordWrap(True)
+            self.configure_copy_path_label(label, path_getter=asset_full_path)
 
             # Add button and label to layout
             v_layout.addWidget(button)
@@ -1146,10 +1219,12 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             info_label.setWordWrap(True)
             tooltip = self._build_component_tooltip(component_name, data)
             info_label.setToolTip(tooltip)
+            copy_target = latest.get("path") if latest else data.get("folder")
+            self.configure_copy_path_label(info_label, path_getter=copy_target)
             row_layout.addWidget(info_label, 1)
 
             load_button = QtWidgets.QPushButton(f"Load {component_name}")
-            load_button.setObjectName("BlueButton")
+            self.configure_blue_button(load_button, path_getter=copy_target)
             load_button.setFixedHeight(24)
             load_button.setToolTip(tooltip)
 
@@ -1250,6 +1325,8 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                 if tooltip_text:
                     label.setToolTip(tooltip_text)
 
+                self.configure_copy_path_label(label, path_getter=full_path)
+
                 row.addWidget(label)
 
                 # Show script contents for .py or .mel
@@ -1304,7 +1381,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                         btn.setIconSize(QtCore.QSize(size[0]/1.5, size[0]/1.5))
                         btn.setToolTip(tooltip)
                         btn.setFixedSize(*size)
-                        btn.setObjectName("BlueButton")
+                        self.configure_blue_button(btn, path_getter=full_path)
                         btn.clicked.connect(callback)
                         return btn
 
@@ -1467,6 +1544,22 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                 subprocess.Popen(["open", folder_path])  # use "xdg-open" for Linux
         else:
             print(f"[ERROR] Folder does not exist: {folder_path}")
+
+    def open_path_location(self, path):
+        if not path:
+            return
+
+        target_path = os.path.normpath(str(path))
+        open_target = target_path if os.path.isdir(target_path) else os.path.dirname(target_path)
+
+        if not open_target or not os.path.exists(open_target):
+            print(f"[ERROR] Path does not exist: {target_path}")
+            return
+
+        if os.name == "nt":
+            os.startfile(open_target)
+        elif os.name == "posix":
+            subprocess.Popen(["open", open_target])
 
         # -------------------------------------------------------------------
         # -------------------------------------------------------------------
@@ -2033,6 +2126,10 @@ class VersionDeleteDialog(QtWidgets.QDialog):
         self.delete_btn.setObjectName("BlueButton")
         self.close_btn.setObjectName("BlueButton")
 
+        for btn in (self.refresh_btn, self.delete_btn, self.close_btn):
+            btn.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            btn.customContextMenuRequested.connect(self._open_project_path_from_context)
+
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addWidget(self.refresh_btn)
         btn_row.addStretch()
@@ -2053,6 +2150,16 @@ class VersionDeleteDialog(QtWidgets.QDialog):
     def set_project_folder(self, project_folder):
         self.project_folder = os.path.abspath(project_folder)
         self.refresh_table()
+
+    def _open_project_path_from_context(self, _point):
+        target_path = os.path.normpath(self.project_folder)
+        if not os.path.exists(target_path):
+            return
+
+        if os.name == "nt":
+            os.startfile(target_path)
+        elif os.name == "posix":
+            subprocess.Popen(["open", target_path])
 
     def _ensure_build_data_loaded(self):
         query_json = os.path.join(self.project_folder, "Build_Data.json")

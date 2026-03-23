@@ -151,6 +151,18 @@ class SaveWIP(QtBlueWindow.Qt_Blue):
             btn.setObjectName("BlueButton")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+            btn.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            btn.customContextMenuRequested.connect(self._open_save_path_from_context)
+
+    def _open_save_path_from_context(self, _point):
+        target_path = os.path.normpath(self.save_path)
+        if not os.path.exists(target_path):
+            return
+
+        if os.name == "nt":
+            os.startfile(target_path)
+        elif os.name == "posix":
+            QtCore.QProcess.startDetached("open", [target_path])
 
     # -------------------------------------------------------------------
 

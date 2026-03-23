@@ -150,6 +150,18 @@ class PublishAsset(QtBlueWindow.Qt_Blue):
             btn.setObjectName("BlueButton")
             btn.style().unpolish(btn)
             btn.style().polish(btn)
+            btn.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            btn.customContextMenuRequested.connect(self._open_publish_path_from_context)
+
+    def _open_publish_path_from_context(self, _point):
+        target_path = os.path.normpath(os.path.join(self.save_path, self.mode))
+        if not os.path.exists(target_path):
+            return
+
+        if os.name == "nt":
+            os.startfile(target_path)
+        elif os.name == "posix":
+            QtCore.QProcess.startDetached("open", [target_path])
 
     # -------------------------------------------------------------------
     def get_next_version_number(self, folder_path, name, task, padding=4):
