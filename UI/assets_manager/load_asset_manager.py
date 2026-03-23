@@ -465,12 +465,35 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             self.ui.add_show_button,
             self.ui.add_asset_button,
             self.ui.add_task_button,
-            self.ui.save_wip_button,
             self.ui.publish_button
         ]
 
         for btn in buttons:
             self.configure_blue_button(btn, path_getter=lambda: self.project_folder)
+
+        # Apply blue styling directly to save_wip_button
+        blue_style = """
+            QPushButton {
+                background-color: #3b5998;
+                color: #f0f0f0;
+                border-radius: 6px;
+                font-weight: bold;
+                padding: 6px;
+                border: 1px solid #2e3e5c;
+            }
+            QPushButton:hover {
+                background-color: #4a69ad;
+                border: 1px solid #3c4d6e;
+            }
+            QPushButton:pressed {
+                background-color: #2d4474;
+            }
+        """
+        self.ui.save_wip_button.setStyleSheet(blue_style)
+        self.ui.save_wip_button.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.ui.save_wip_button.customContextMenuRequested.connect(
+            partial(self._on_button_context_menu, self.ui.save_wip_button)
+        )
 
     def _resolve_path_value(self, path_getter):
         if callable(path_getter):
