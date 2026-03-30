@@ -304,6 +304,20 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                 self.populate_assets(paths[0])
 
         self.set_blue_buttons()
+        self.update_action_buttons_state()
+
+    def update_action_buttons_state(self):
+        """Enable Save/Publish only when show, asset and task are selected."""
+        has_valid_context = bool(self.current_show and self.current_asset and self.current_task)
+        self.ui.save_wip_button.setEnabled(has_valid_context)
+        self.ui.publish_button.setEnabled(has_valid_context)
+
+        if has_valid_context:
+            self.ui.save_wip_button.setToolTip("Save a new WIP version")
+            self.ui.publish_button.setToolTip("Publish current work")
+        else:
+            self.ui.save_wip_button.setToolTip("Select a task first")
+            self.ui.publish_button.setToolTip("Select a task first")
 
     def force_initial_resize(self):
         # Fake a tiny resize to force Qt to recalc layouts + icon sizes
@@ -1053,6 +1067,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.current_asset = None
         self.current_task = None
         self.update_window_title()
+        self.update_action_buttons_state()
 
         # Auto-populate last asset if exists
         last_asset, last_task = self.read_last_used_asset_task()
@@ -1129,6 +1144,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
 
         self.current_task = None
         self.update_window_title()
+        self.update_action_buttons_state()
 
     def _extract_component_version_number(self, version_name):
         match = re.match(r"^v(\d+)$", str(version_name), re.IGNORECASE)
@@ -1494,6 +1510,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             populate(self.ui.publish_layout, pub_path, include_components=show_components_section)
 
         self.update_window_title()
+        self.update_action_buttons_state()
 
     def clear_layout(self, layout):
         while layout.count():
@@ -1860,6 +1877,10 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
     # ---------------------------------------------------------------
     # ---------------------Wip and Publish---------------------------
     def save_wip(self):
+        if not self.current_show or not self.current_asset or not self.current_task:
+            cmds.warning("Select a task before saving WIP.")
+            return
+
         import Blue_Pipeline
         from Blue_Pipeline.UI.assets_manager import load_save_wip
         reload(load_save_wip)
