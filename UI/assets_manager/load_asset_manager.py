@@ -459,6 +459,24 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         self.set_title(new_title)
         self.where_to_save_files = new_title
 
+    def refresh_current_view(self):
+        """Refresh current UI selection without requiring manual re-clicks."""
+        if self.current_show and self.current_asset and self.current_task:
+            selected_task = self.current_task
+            self.populate_tasks(self.current_show, self.current_asset)
+            self.populate_files(self.current_show, self.current_asset, selected_task)
+            return
+
+        if self.current_show and self.current_asset:
+            self.populate_tasks(self.current_show, self.current_asset)
+            return
+
+        if self.current_show:
+            self.populate_assets(self.current_show)
+            return
+
+        self.populate_shows()
+
     def set_blue_buttons(self):
         buttons = [
             self.ui.settings_button,
@@ -997,6 +1015,13 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             button.setToolTip(asset_name)
             button.setObjectName("BlueButton")
             button.clicked.connect(partial(self.populate_tasks, show_path, asset_name))
+            button.right_click_callback = partial(
+                self._show_asset_context_menu,
+                show_path,
+                asset_name,
+                asset_full_path,
+                button,
+            )
 
             # Label
             label = QtWidgets.QLabel(self.get_nice_name(asset_name))
@@ -1037,6 +1062,24 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                 self.populate_files(self.current_show, last_asset, last_task)
 
         return assets
+
+    def _show_asset_context_menu(self, show_path, asset_name, asset_full_path, button, global_pos):
+        menu = QtWidgets.QMenu(button)
+        update_thumb_action = menu.addAction("Update Thumbnail")
+        open_folder_action = menu.addAction("Open Asset Folder")
+
+        selected_action = menu.exec_(global_pos)
+
+        if selected_action == update_thumb_action:
+            selected_task = self.current_task if self.current_asset == asset_name else None
+            self.capture_asset_screenshot(show_path, asset_name)
+            self.populate_assets(show_path)
+            self.populate_tasks(show_path, asset_name)
+            if selected_task:
+                self.populate_files(show_path, asset_name, selected_task)
+
+        elif selected_action == open_folder_action:
+            self.open_path_location(asset_full_path)
 
     def populate_tasks(self, show_path, asset_name):
         """
@@ -1671,7 +1714,12 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
             )
 
             if reply == QtWidgets.QMessageBox.Yes:
+                selected_task = self.current_task if self.current_asset == existing_asset_folder else None
                 self.capture_asset_screenshot(self.current_show_path, existing_asset_folder)
+                self.populate_assets(self.current_show_path)
+                self.populate_tasks(self.current_show_path, existing_asset_folder)
+                if selected_task:
+                    self.populate_files(self.current_show_path, existing_asset_folder, selected_task)
             else:
                 print("[INFO] User chose not to update the screenshot.")
             return
@@ -1784,14 +1832,6 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
         show_path = os.path.join(self.project_folder, self.current_show)
         assets = [name for name in os.listdir(show_path) if os.path.isdir(os.path.join(show_path, name))]
 
-        # Detect selected asset
-        asset_widget = self.sender()
-        if not asset_widget:
-            cmds.warning("No asset selected.")
-            return
-
-        # This logic assumes only one asset is selected at a time and last populated asset is current
-        # You might want to track selected asset in a variable instead
         selected_asset = getattr(self, "current_asset", None)
         if not selected_asset:
             cmds.warning("Asset not selected.")
@@ -1799,6 +1839,7 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
 
         asset_path = os.path.join(show_path, selected_asset)
 
+        created_or_existing = []
         for task in task_names:
             task_path = os.path.join(asset_path, task)
             if not os.path.exists(task_path):
@@ -1807,8 +1848,13 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
                 print(f"[INFO] Created task: {task_path}")
             else:
                 print(f"[INFO] Task already exists: {task_path}")
+            created_or_existing.append(task)
 
         self.populate_tasks(self.current_show, selected_asset)
+
+        preferred_task = created_or_existing[0] if created_or_existing else None
+        if preferred_task:
+            self.populate_files(self.current_show, selected_asset, preferred_task)
 
     #----------------------------------------------------------------
     # ---------------------------------------------------------------
@@ -1820,10 +1866,11 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
 
         full_save_path = os.path.join(self.project_folder, self.where_to_save_files)
 
-        cSaveWIP = load_save_wip.SaveWIP(save_path=full_save_path, asset_name=self.current_asset, mode='WIP')
-        cSaveWIP.setWindowModality(QtCore.Qt.ApplicationModal)
-        cSaveWIP.setWindowFlags(QtCore.Qt.Dialog | QtCore.Qt.WindowTitleHint | QtCore.Qt.CustomizeWindowHint)
-        cSaveWIP.show()
+        self._save_wip_dialog = load_save_wip.SaveWIP(save_path=full_save_path, asset_name=self.current_asset, mode='WIP')
+        self._save_wip_dialog.setWindowModality(QtCore.Qt.ApplicationModal)
+        self._save_wip_dialog.setWindowFlags(QtCore.Qt.Dialog | QtCore.Qt.WindowTitleHint | QtCore.Qt.CustomizeWindowHint)
+        self._save_wip_dialog.destroyed.connect(lambda *_: QtCore.QTimer.singleShot(0, self.refresh_current_view))
+        self._save_wip_dialog.show()
 
     def publish_asset(self):
         import Blue_Pipeline
@@ -1832,10 +1879,11 @@ class AssetsManagerUI(QtBlueWindow.Qt_Blue):
 
         full_save_path = os.path.join(self.project_folder, self.where_to_save_files)
 
-        cSaveWIP = load_publish_asset.PublishAsset(save_path=full_save_path, asset_name=self.current_asset, mode='Publish')
-        cSaveWIP.setWindowModality(QtCore.Qt.ApplicationModal)
-        cSaveWIP.setWindowFlags(QtCore.Qt.Dialog | QtCore.Qt.WindowTitleHint | QtCore.Qt.CustomizeWindowHint)
-        cSaveWIP.show()
+        self._publish_dialog = load_publish_asset.PublishAsset(save_path=full_save_path, asset_name=self.current_asset, mode='Publish')
+        self._publish_dialog.setWindowModality(QtCore.Qt.ApplicationModal)
+        self._publish_dialog.setWindowFlags(QtCore.Qt.Dialog | QtCore.Qt.WindowTitleHint | QtCore.Qt.CustomizeWindowHint)
+        self._publish_dialog.destroyed.connect(lambda *_: QtCore.QTimer.singleShot(0, self.refresh_current_view))
+        self._publish_dialog.show()
 
 
     # CLOSE EVENTS _________________________________
@@ -1862,6 +1910,7 @@ class ImportButton(QtWidgets.QPushButton):
     def __init__(self, label, file_path, parent=None):
         super().__init__(label, parent)
         self.file_path = file_path
+        self.right_click_callback = None
         self.setFixedSize(30, 30)
         self.setObjectName("BlueButton")
 
@@ -1872,6 +1921,9 @@ class ImportButton(QtWidgets.QPushButton):
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.RightButton:
+            if callable(self.right_click_callback):
+                self.right_click_callback(event.globalPos())
+                return
             self.open_folder_location()
         else:
             # Let Qt handle left and other clicks (e.g., emit clicked)
